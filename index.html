@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BMX Beach Jam</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;background:#0e2233;overflow:hidden}
+  body{display:flex;align-items:center;justify-content:center}
+  canvas{
+    image-rendering:pixelated;
+    image-rendering:crisp-edges;
+    width:min(100vw, calc(100vh * 16 / 9));
+    height:min(100vh, calc(100vw * 9 / 16));
+  }
+</style>
+</head>
+<body>
+<canvas id="g" width="320" height="180"></canvas>
+<script>
+'use strict';
+const cvs = document.getElementById('g');
+const ctx = cvs.getContext('2d');
+const W = 320, H = 180;
+
+// ---------- palette (sunny California, 8-bit) ----------
+const P = {
+  sky0:'#3fa9e0', sky1:'#5cbceb', sky2:'#7ecdf2', sky3:'#a5def7', sky4:'#cfeefb',
+  sun:'#ffd93b', sunCore:'#fff3b0', sunHalo:'#ffe98a',
+  cloud:'#ffffff', cloudShade:'#cfe8f5',
+  ocean:'#2d7dd2', oceanDeep:'#2364b0', oceanLite:'#5aa9e6', foam:'#dff3fb', sparkle:'#ffffff',
+  sail:'#ffffff', hull:'#1b2a38',
+  duneFar:'#eede9f', duneFarShade:'#e3cf8d', duneNear:'#dfc487',
+  sand:'#ecca7a', sandLite:'#f6dc95', sandDark:'#ddb266', sandSpeck:'#c49a52', sandEdge:'#b98e45', sandWet:'#cfa85e',
+  palmTrunk:'#8a5a2b', palmTrunkL:'#a8763d', palmLeaf:'#2f9e44', palmLeafL:'#4dbf5e', palmLeafD:'#227437',
+  ink:'#1b2a38',
+  skin:'#f0a868', shirt:'#e94f37', shirtD:'#c23a28', shorts:'#2456a8',
+  helmet:'#f4f4f4', visor:'#1b2a38',
+  bike:'#1fa39a', bikeD:'#15756f', tire:'#1b2a38', rim:'#e8edf0', hub:'#8a97a1',
+  white:'#ffffff', gold:'#ffd93b', red:'#e94f37', green:'#2f9e44',
+  shadow:'rgba(60,40,10,0.28)'
+};
+function h2(a,b){let n=(a|0)*374761393+(b|0)*668265263;n=(n^(n>>>13))*1274126177;return((n^(n>>>16))>>>0)/4294967296;}
+
+// ---------- seeded rng ----------
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;}}
+const rnd = mulberry32(19870615);
+const rint = (a,b)=>a+Math.floor(rnd()*(b-a+1));
+
+// ---------- course ----------
+const LEN = 8200, BASE = 146;
+const heights = new Float32Array(LEN + 1200).fill(BASE);
+function addBump(x0,w,h){ for(let i=0;i<w;i++){ const y = BASE - h*0.5*(1-Math.cos(2*Math.PI*i/w)); if(y<heights[x0+i]) heights[x0+i]=y; } }
+function addKicker(x0,w,h){ for(let i=0;i<w;i++){ heights[x0+i] = BASE - h*Math.pow(i/w,1.25); } }
+function addTable(x0,up,flat,down,h){
+  for(let i=0;i<up;i++) heights[x0+i] = BASE - h*(i/up);
+  for(let i=0;i<flat;i++) heights[x0+up+i] = BASE - h;
+  for(let i=0;i<down;i++) heights[x0+up+flat+i] = BASE - h*(1-i/down);
+}
+(function gen(){
+  let x = 420;
+  while(x < LEN - 700){
+    const r = rnd();
+    if(r < 0.28){ addBump(x, rint(60,80), rint(8,13)); x += 80; }
+    else if(r < 0.48){ for(let k=0;k<3;k++){ addBump(x,44,7); x += 44; } }
+    else if(r < 0.80){ addKicker(x, rint(42,52), rint(16,24)); x += 54; }
+    else { addTable(x, 32, rint(46,64), 32, 14); x += 132; }
+    x += 90 + rint(0,130);
+  }
+})();
+const FINISH_X = LEN - 420;
+const groundAt = x => heights[Math.max(0, Math.min(heights.length-1, Math.round(x)))];
+const gradAt = x => (groundAt(x+3) - groundAt(x-3)) / 6;
+
+// decorations along track
+const palms = [], fgPalms = [];
+for(let x=150; x<LEN; x += 260 + rint(0,320)) palms.push({x, s:0.55 + rnd()*0.25});
+for(let x=60;  x<LEN; x += 480 + rint(0,500)) fgPalms.push({x, s:0.9 + rnd()*0.3});
+const clouds = [];
+for(let i=0;i<7;i++) clouds.push({x:rnd()*900, y:10+rnd()*38, w:24+rnd()*28});
+const boats = [];
+for(let i=0;i<3;i++) boats.push({x:rnd()*800, bob:rnd()*6});
+const gulls = [];
+for(let i=0;i<3;i++) gulls.push({x:rnd()*400, y:22+rnd()*30, sp:8+rnd()*8, ph:rnd()*6});
+const brellas = [];
+for(let x=300; x<LEN; x += 600 + rint(0,700)) brellas.push({x, c:rnd()<0.5?'#e94f37':'#2456a8'});
+
+// ---------- audio ----------
+let AC = null;
+function audio(){ if(!AC){ try{ AC = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } if(AC && AC.state==='suspended') AC.resume(); }
+function beep(f0, f1, dur, type, vol){
+  if(!AC) return;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type||'square';
+  o.frequency.setValueAtTime(f0, AC.currentTime);
+  o.frequency.linearRampToValueAtTime(f1, AC.currentTime+dur);
+  g.gain.setValueAtTime(vol||0.04, AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime+dur);
+  o.connect(g).connect(AC.destination);
+  o.start(); o.stop(AC.currentTime+dur+0.02);
+}
+const sJump  = ()=>beep(220,480,0.14,'square',0.045);
+const sLand  = ()=>beep(180,120,0.08,'square',0.04);
+const sTrick = ()=>beep(660,990,0.12,'square',0.04);
+const sCrash = ()=>beep(160,55,0.4,'sawtooth',0.06);
+const sFinish= ()=>{ beep(523,523,0.12,'square',0.05); setTimeout(()=>beep(659,659,0.12,'square',0.05),130); setTimeout(()=>beep(784,1046,0.25,'square',0.05),260); };
+
+// ---------- input ----------
+const keys = {}, pressed = {};
+addEventListener('keydown', e => {
+  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' ','Space'].includes(e.key) || e.code==='Space') e.preventDefault();
+  const k = e.code==='Space' ? 'Space' : e.key;
+  if(!keys[k]) pressed[k] = true;
+  keys[k] = true;
+  audio();
+});
+addEventListener('keyup', e => { const k = e.code==='Space' ? 'Space' : e.key; keys[k] = false; });
+
+// ---------- game state ----------
+const TIME_LIMIT = 60;
+let mode = 'menu'; // menu | play | finish | over
+let overReason = '';
+let score = 0, best = 0;
+try{ best = parseInt(localStorage.getItem('bmx_beach_jam_best')||'0',10)||0; }catch(e){}
+let timeLeft = TIME_LIMIT;
+let popups = [];   // {text,x,y,t,color}
+let dust = [];     // particles {x,y,vx,vy,t}
+let camX = 0, tGlobal = 0, finishTimer = 0, goTimer = 0;
+
+const rider = {};
+function resetRider(){
+  Object.assign(rider, {
+    x: 120, y: groundAt(120), vx: 0, vy: 0,
+    angle: 0, aV: 0, grounded: true,
+    pedal: 0, wheel: 0,
+    air: 0, totRot: 0, flipsB: 0, flipsF: 0,
+    spin: false, spinT: 0, spinDone: false,
+    ttT: 0, ttDone: false, pose: 'ride',
+    pending: [], crash: 0
+  });
+}
+function startRun(){
+  score = 0; timeLeft = TIME_LIMIT; popups = []; dust = [];
+  resetRider(); mode = 'play'; goTimer = 1.4;
+}
+function endRun(reason){
+  overReason = reason;
+  if(score > best){ best = score; try{ localStorage.setItem('bmx_beach_jam_best', String(best)); }catch(e){} }
+  mode = 'over';
+}
+function addPopup(text, color){
+  popups.push({text, x: rider.x, y: rider.y - 34, t: 1.4, color: color||P.white});
+}
+function normAng(a){ while(a > Math.PI) a -= 2*Math.PI; while(a < -Math.PI) a += 2*Math.PI; return a; }
+
+// ---------- update ----------
+const G = 430;
+function update(dt){
+  tGlobal += dt;
+  for(const c of clouds){ c.x -= dt*3; if(c.x < -60) c.x = 960; }
+  popups.forEach(p => { p.t -= dt; p.y -= 14*dt; });
+  popups = popups.filter(p => p.t > 0);
+  dust.forEach(d => { d.t -= dt; d.x += d.vx*dt; d.y += d.vy*dt; d.vy += 60*dt; });
+  dust = dust.filter(d => d.t > 0);
+
+  if(mode === 'menu'){
+    if(pressed['Space']) startRun();
+    return;
+  }
+  if(mode === 'over'){
+    if(pressed['Space']) startRun();
+    return;
+  }
+  if(mode === 'finish'){
+    finishTimer -= dt;
+    rider.vx = Math.max(0, rider.vx - 90*dt);
+    rider.x += rider.vx*dt;
+    rider.y = groundAt(rider.x);
+    rider.angle = Math.atan(gradAt(rider.x));
+    rider.wheel += rider.vx*dt/5;
+    if(finishTimer <= 0) endRun('finish');
+    camX = rider.x - 90;
+    return;
+  }
+
+  // ---- play ----
+  if(goTimer > 0) goTimer -= dt;
+  timeLeft -= dt;
+  if(timeLeft <= 0){ timeLeft = 0; endRun('time'); return; }
+
+  const r = rider;
+
+  if(r.crash > 0){
+    r.crash -= dt;
+    r.vx = Math.max(0, r.vx - 160*dt);
+    r.x += r.vx*dt;
+    r.y = groundAt(r.x);
+    r.angle += 9*dt;
+    if(r.crash <= 0){
+      r.angle = Math.atan(gradAt(r.x)); r.aV = 0; r.pose='ride';
+      r.pending = []; r.totRot = 0; r.flipsB = r.flipsF = 0;
+      r.spin=false; r.spinDone=false; r.ttT=0; r.ttDone=false; r.grounded = true;
+    }
+    camX = r.x - 90;
+    return;
+  }
+
+  if(r.grounded){
+    // pedal / brake
+    if(keys['ArrowRight']) r.vx += 130*dt;
+    if(keys['ArrowLeft'])  r.vx -= 200*dt;
+    r.vx -= r.vx*0.30*dt;
+    r.vx = Math.max(0, Math.min(195, r.vx));
+    r.pedal += r.vx*dt*0.09;
+    r.wheel += r.vx*dt/5;
+
+    const grad0 = gradAt(r.x);
+    r.x += r.vx*dt;
+    const gy = groundAt(r.x);
+    const grad1 = gradAt(r.x);
+
+    if(pressed['Space'] && r.vx > 10){
+      // bunny hop
+      r.grounded = false;
+      r.vy = -(105 + r.vx*0.5) + Math.min(0, r.vx*grad0*1.2);
+      r.vy = Math.max(r.vy, -240);
+      startAir(); sJump();
+    } else if(grad0 < -0.14 && grad1 > grad0 + 0.28 && r.vx > 70){
+      // launched off a lip
+      r.grounded = false;
+      r.vy = Math.max(-240, r.vx*grad0*1.45);
+      startAir(); sJump();
+    } else if(gy - r.y > 4.5){
+      // ground fell away
+      r.grounded = false;
+      r.vy = Math.max(0, r.vx*grad0);
+      startAir();
+    } else {
+      r.y = gy;
+      const target = Math.atan(grad1);
+      r.angle += (target - r.angle)*Math.min(1, 14*dt);
+      if(r.vx > 120 && Math.random() < dt*18)
+        dust.push({x:r.x-10, y:r.y-1, vx:-30-Math.random()*20, vy:-14-Math.random()*18, t:0.35});
+    }
+  } else {
+    // airborne
+    r.air += dt;
+    r.vy += G*dt;
+    r.x += r.vx*dt*0.985;
+    r.y += r.vy*dt;
+    r.wheel += r.vx*dt/7;
+
+    // flips
+    if(keys['ArrowLeft'])       r.aV += (-6.4 - r.aV)*Math.min(1, 10*dt);
+    else if(keys['ArrowRight']) r.aV += ( 6.4 - r.aV)*Math.min(1, 10*dt);
+    else                        r.aV += (0 - r.aV)*Math.min(1, 4*dt);
+    r.angle += r.aV*dt;
+    r.totRot += r.aV*dt;
+    while(r.totRot <= -(r.flipsB+1)*2*Math.PI){ r.flipsB++; r.pending.push({n:'BACKFLIP', p:500}); sTrick(); }
+    while(r.totRot >=  (r.flipsF+1)*2*Math.PI){ r.flipsF++; r.pending.push({n:'FRONTFLIP', p:600}); sTrick(); }
+
+    // 360 spin
+    if(pressed['ArrowUp'] && !r.spin && !r.spinDone){ r.spin = true; r.spinT = 0; }
+    if(r.spin){
+      r.spinT += dt;
+      if(r.spinT >= 0.55){ r.spin = false; r.spinDone = true; r.pending.push({n:'360 SPIN', p:300}); sTrick(); }
+    }
+
+    // tabletop
+    if(keys['ArrowDown'] && !r.spin){
+      r.pose = 'table'; r.ttT += dt;
+      if(r.ttT >= 0.35 && !r.ttDone){ r.ttDone = true; r.pending.push({n:'TABLETOP', p:250}); sTrick(); }
+    } else if(r.pose === 'table'){ r.pose = 'ride'; }
+
+    // landing
+    const gy = groundAt(r.x);
+    if(r.vy > 0 && r.y >= gy){
+      r.y = gy;
+      const slopeAng = Math.atan(gradAt(r.x));
+      const diff = normAng(r.angle - slopeAng);
+      const midTrick = r.spin || (r.pose==='table' && r.ttT < 0.35 && r.ttT > 0.1);
+      if(Math.abs(diff) > 0.75 || midTrick){
+        // wipeout
+        r.crash = 1.25; r.pose = 'crash'; sCrash();
+        addPopup('WIPEOUT!', P.red);
+        for(let i=0;i<10;i++) dust.push({x:r.x, y:r.y-2, vx:(Math.random()-0.5)*120, vy:-Math.random()*70, t:0.5});
+      } else {
+        r.grounded = true; r.angle = slopeAng; r.aV = 0; r.pose='ride';
+        let gained = 0, yOff = 0;
+        for(const t of r.pending){ gained += t.p; popups.push({text:t.n+' +'+t.p, x:r.x, y:r.y-34-yOff, t:1.5, color:P.gold}); yOff += 10; }
+        if(r.air > 1.05){ gained += 100; popups.push({text:'BIG AIR +100', x:r.x, y:r.y-34-yOff, t:1.5, color:P.white}); }
+        if(gained > 0){ score += gained; }
+        sLand();
+        for(let i=0;i<5;i++) dust.push({x:r.x, y:r.y-1, vx:(Math.random()-0.5)*70, vy:-Math.random()*40, t:0.4});
+      }
+      r.pending = []; r.totRot = 0; r.flipsB = r.flipsF = 0;
+      r.spin = false; r.spinDone = false; r.spinT = 0; r.ttT = 0; r.ttDone = false;
+    }
+  }
+
+  // finish line
+  if(r.x >= FINISH_X && mode === 'play'){
+    const bonus = Math.floor(timeLeft) * 25;
+    score += bonus;
+    addPopup('FINISH! +'+bonus, P.gold);
+    sFinish();
+    mode = 'finish'; finishTimer = 1.6;
+  }
+  camX = Math.max(0, Math.min(LEN - W + 100, r.x - 90));
+}
+function startAir(){
+  const r = rider;
+  r.air = 0; r.totRot = 0; r.flipsB = 0; r.flipsF = 0;
+  r.spin = false; r.spinDone = false; r.spinT = 0; r.ttT = 0; r.ttDone = false;
+  r.pending = [];
+}
+
+// ---------- drawing helpers ----------
+function px(x,y,w,h,c){ ctx.fillStyle = c; ctx.fillRect(Math.round(x), Math.round(y), w, h); }
+function text(str, x, y, size, color, align){
+  ctx.font = size + 'px "Press Start 2P", monospace';
+  ctx.fillStyle = color; ctx.textAlign = align||'left'; ctx.textBaseline = 'top';
+  ctx.fillText(str, Math.round(x), Math.round(y));
+}
+function textShadow(str, x, y, size, color, align){
+  ctx.font = size + 'px "Press Start 2P", monospace';
+  ctx.textAlign = align||'left'; ctx.textBaseline='top';
+  ctx.fillStyle = P.ink; ctx.fillText(str, Math.round(x)+1, Math.round(y)+1);
+  ctx.fillStyle = color; ctx.fillText(str, Math.round(x), Math.round(y));
+}
+
+function drawPalm(sx, gy, s, dark){
+  const trunk  = dark ? '#b09265' : P.palmTrunk;
+  const trunkL = dark ? '#c2a878' : P.palmTrunkL;
+  const leaf   = dark ? '#9cc47a' : P.palmLeaf;
+  const leafL  = dark ? '#b0d48f' : P.palmLeafL;
+  const leafD  = dark ? '#87b166' : P.palmLeafD;
+  const h = Math.round(36*s);
+  // curved trunk with lit edge + ring notches
+  for(let i=0;i<h;i+=1){
+    const off = Math.pow(i/h,2)*7*s;
+    px(sx+off, gy-i-2, 3, 1, trunk);
+    px(sx+off, gy-i-2, 1, 1, trunkL);
+    if(i%6===0) px(sx+off, gy-i-2, 3, 1, '#6f4620');
+  }
+  const tx = sx + Math.round(7*s) + 1, ty = gy - h - 2;
+  // fronds: layered drooping arcs, back layer darker
+  const fr = [[-13,-1],[-9,-7],[-3,-10],[4,-9],[10,-5],[13,1]];
+  for(let f=0; f<fr.length; f++){
+    const dx = fr[f][0]*s, dy = fr[f][1]*s;
+    const col = f%2 ? leaf : leafD;
+    for(let k=0;k<7;k++){
+      const t = k/6;
+      const fx = tx + dx*t, fy = ty + dy*t + t*t*6*s;
+      px(fx, fy, 2, 2, col);
+      if(k>2) px(fx, fy+2, 1, 1, col); // frond fringe
+      if(f>=3 && k<4) px(fx, fy-1, 1, 1, leafL); // sun-lit tops
+    }
+  }
+  px(tx-2, ty-2, 4, 4, leafD);
+  px(tx-1, ty-2, 2, 1, leafL);
+  // coconuts
+  px(tx-3, ty+2, 2, 2, '#6b4423'); px(tx+2, ty+3, 2, 2, '#6b4423');
+}
+
+function drawUmbrella(sx, gy, c){
+  px(sx+3, gy-9, 1, 9, '#8a97a1');
+  for(let i=0;i<7;i++){
+    const hgt = [1,2,3,3,3,2,1][i];
+    px(sx+i, gy-9-hgt, 1, hgt+1, (i%2===0)?c:'#fdf6e3');
+  }
+  px(sx-1, gy-1, 9, 2, 'rgba(60,40,10,0.15)');
+}
+
+function drawRider(r){
+  const sx = r.x - camX, sy = r.y;
+  // shadow
+  const gy = groundAt(r.x);
+  const sc = Math.max(0.3, 1 - (gy - r.y)/70);
+  ctx.fillStyle = P.shadow;
+  ctx.fillRect(Math.round(sx - 10*sc), Math.round(gy - 1), Math.round(20*sc), 2);
+
+  ctx.save();
+  ctx.translate(Math.round(sx), Math.round(sy));
+  ctx.rotate(r.angle);
+  if(r.spin){
+    let s = Math.cos(r.spinT/0.55 * Math.PI*2);
+    if(Math.abs(s) < 0.18) s = s < 0 ? -0.18 : 0.18;
+    ctx.scale(s, 1);
+  }
+  const table = r.pose === 'table';
+  const crash = r.pose === 'crash';
+  if(table) ctx.rotate(-0.28);
+
+  // wheels: tire + rim + hub + spinning spokes
+  const wy = -5;
+  for(const wx of [-8, 8]){
+    ctx.strokeStyle = P.tire; ctx.lineWidth = 2.4;
+    ctx.beginPath(); ctx.arc(wx, wy, 4.6, 0, Math.PI*2); ctx.stroke();
+    ctx.strokeStyle = P.rim; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(wx, wy, 3.3, 0, Math.PI*2); ctx.stroke();
+    ctx.strokeStyle = P.hub; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(wx + Math.cos(r.wheel)*3, wy + Math.sin(r.wheel)*3);
+    ctx.lineTo(wx - Math.cos(r.wheel)*3, wy - Math.sin(r.wheel)*3);
+    ctx.moveTo(wx + Math.cos(r.wheel+1.57)*3, wy + Math.sin(r.wheel+1.57)*3);
+    ctx.lineTo(wx - Math.cos(r.wheel+1.57)*3, wy - Math.sin(r.wheel+1.57)*3);
+    ctx.stroke();
+    px(wx-1, wy-1, 2, 2, P.tire);
+  }
+  // frame: teal with dark under-edge
+  ctx.strokeStyle = P.bikeD; ctx.lineWidth = 2.2;
+  ctx.beginPath();
+  ctx.moveTo(-8, wy); ctx.lineTo(0, -7); ctx.lineTo(8, wy);
+  ctx.moveTo(-8, wy); ctx.lineTo(-4, -12); ctx.lineTo(0,-7);
+  ctx.moveTo(8, wy); ctx.lineTo(6.5, -13);
+  ctx.stroke();
+  ctx.strokeStyle = P.bike; ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(-8, wy); ctx.lineTo(0, -7); ctx.lineTo(8, wy);
+  ctx.moveTo(-4, -12); ctx.lineTo(0,-7);
+  ctx.stroke();
+  px(-6, -13, 5, 2, P.ink);                        // seat
+  ctx.strokeStyle = P.ink; ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.moveTo(6.5,-13); ctx.lineTo(6,-16); ctx.lineTo(9.5,-16); ctx.stroke(); // bars
+  px(0,-8,2,2,P.ink);                               // crank hub
+
+  // pedals + legs
+  const pa = r.pedal;
+  const p1x = Math.cos(pa)*3, p1y = -7 + Math.sin(pa)*3;
+  const p2x = -p1x, p2y = -7 - Math.sin(pa)*3;
+  ctx.strokeStyle = P.shorts; ctx.lineWidth = 2;
+  const hipX = -3, hipY = -14;
+  if(crash){
+    ctx.beginPath(); ctx.moveTo(hipX,hipY); ctx.lineTo(-7,-9); ctx.moveTo(hipX,hipY); ctx.lineTo(2,-8); ctx.stroke();
+  } else if(table){
+    ctx.beginPath(); ctx.moveTo(hipX,hipY); ctx.lineTo(p1x,p1y); ctx.moveTo(hipX,hipY); ctx.lineTo(p2x-1,p2y); ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(hipX,hipY); ctx.lineTo((hipX+p1x)/2 + 2, (hipY+p1y)/2); ctx.lineTo(p1x,p1y);
+    ctx.moveTo(hipX,hipY); ctx.lineTo((hipX+p2x)/2 + 2, (hipY+p2y)/2); ctx.lineTo(p2x,p2y);
+    ctx.stroke();
+  }
+  // torso: shaded shirt
+  ctx.strokeStyle = P.shirtD; ctx.lineWidth = 3.6;
+  ctx.beginPath(); ctx.moveTo(hipX, hipY); ctx.lineTo(2, -20); ctx.stroke();
+  ctx.strokeStyle = P.shirt; ctx.lineWidth = 2.2;
+  ctx.beginPath(); ctx.moveTo(hipX, hipY-0.5); ctx.lineTo(2, -20.5); ctx.stroke();
+  // arm: sleeve + forearm
+  ctx.strokeStyle = P.shirt; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(2,-19); ctx.lineTo(4.5,-17.5); ctx.stroke();
+  ctx.strokeStyle = P.skin; ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.moveTo(4.5,-17.5); ctx.lineTo(7.5,-16); ctx.stroke();
+  // head: skin + white helmet + dark visor
+  px(1, -25, 5, 5, P.skin);
+  px(0, -27, 7, 3, P.helmet);
+  px(1, -28, 5, 1, P.helmet);
+  px(5, -24, 3, 1, P.visor);
+  px(2, -27, 3, 1, '#ffffff');
+  ctx.restore();
+}
+
+function drawScene(){
+  // sky: 5 bands with dithered transitions
+  const bands = [[0,26,P.sky0],[26,22,P.sky1],[48,22,P.sky2],[70,18,P.sky3],[88,14,P.sky4]];
+  for(const [y,h,c] of bands) px(0, y, W, h, c);
+  for(let b=0;b<bands.length-1;b++){
+    const y = bands[b+1][0];
+    ctx.fillStyle = bands[b][2];
+    for(let x=0;x<W;x+=2) ctx.fillRect(x + (y%2), y, 1, 1);
+    ctx.fillStyle = bands[b+1][2];
+    for(let x=0;x<W;x+=2) ctx.fillRect(x + ((y-1)%2), y-1, 1, 1);
+  }
+  // sun with rays
+  const sunX = 262, sunY = 28;
+  ctx.fillStyle = P.sunHalo;
+  for(let i=0;i<8;i++){
+    const a = i*Math.PI/4 + 0.39;
+    px(sunX + Math.cos(a)*16 - 1, sunY + Math.sin(a)*16 - 1, 2, 2, P.sunHalo);
+  }
+  ctx.fillStyle = P.sunHalo; ctx.beginPath(); ctx.arc(sunX, sunY, 14, 0, 7); ctx.fill();
+  ctx.fillStyle = P.sun;     ctx.beginPath(); ctx.arc(sunX, sunY, 11, 0, 7); ctx.fill();
+  ctx.fillStyle = P.sunCore; ctx.beginPath(); ctx.arc(sunX-2, sunY-2, 6, 0, 7); ctx.fill();
+  // clouds: two-tone puffs
+  for(const c of clouds){
+    const cx = ((c.x - camX*0.08) % 960 + 960) % 960 - 40;
+    px(cx+4, c.y+4, c.w, 3, P.cloudShade);
+    px(cx, c.y, c.w, 5, P.cloud);
+    px(cx+5, c.y-3, c.w*0.55, 3, P.cloud);
+    px(cx+9, c.y-5, c.w*0.3, 2, P.cloud);
+  }
+  // gulls
+  ctx.fillStyle = P.ink;
+  for(const g of gulls){
+    const gx = ((g.x - tGlobal*g.sp - camX*0.1) % (W+60) + (W+60)) % (W+60) - 30;
+    const flap = Math.sin(tGlobal*7 + g.ph) > 0 ? -1 : 1;
+    px(gx, g.y, 2, 1, P.ink); px(gx-2, g.y+flap, 2, 1, P.ink); px(gx+2, g.y+flap, 2, 1, P.ink);
+  }
+  // ocean
+  const oy = 86;
+  px(0, oy, W, 6, P.oceanLite);
+  px(0, oy+6, W, 7, P.ocean);
+  px(0, oy+13, W, 5, P.oceanDeep);
+  // twinkling sun-glints
+  for(let i=0;i<14;i++){
+    const gx = ((i*37 - camX*0.15) % (W+20) + (W+20)) % (W+20) - 10;
+    if(Math.sin(tGlobal*3 + i*1.7) > 0.3) px(gx, oy+2+(i%4)*3, 2, 1, P.sparkle);
+  }
+  // foam lines
+  for(let i=0;i<8;i++){
+    const wx = ((i*61 - camX*0.2) % (W+40) + (W+40)) % (W+40) - 20;
+    px(wx, oy + 6 + (i%3)*4, 14, 1, P.foam);
+  }
+  px(0, oy+17, W, 2, P.foam);
+  // sailboats
+  for(const b of boats){
+    const bx = ((b.x - camX*0.18) % 800 + 800) % 800 - 30;
+    const by = oy + 6 + Math.round(Math.sin(tGlobal*1.2 + b.bob));
+    px(bx, by, 9, 2, P.hull);
+    px(bx+4, by-8, 1, 8, P.hull);
+    for(let i=0;i<6;i++) px(bx+5, by-8+i, 1+Math.round(i*0.7), 1, P.sail);
+  }
+  // far dunes with dithered shading
+  ctx.fillStyle = P.duneFar;
+  ctx.beginPath(); ctx.moveTo(0, 118);
+  for(let sx2=0; sx2<=W; sx2+=8){
+    const wx = sx2 + camX*0.45;
+    ctx.lineTo(sx2, 112 + Math.sin(wx*0.02)*5 + Math.sin(wx*0.007)*4);
+  }
+  ctx.lineTo(W, 160); ctx.lineTo(0, 160); ctx.fill();
+  ctx.fillStyle = P.duneFarShade;
+  for(let sx2=0; sx2<W; sx2+=2){
+    const wx = sx2 + camX*0.45;
+    const dy = 112 + Math.sin(wx*0.02)*5 + Math.sin(wx*0.007)*4;
+    ctx.fillRect(sx2 + (Math.round(dy)%2), Math.round(dy)+3, 1, 1);
+    ctx.fillRect(sx2, Math.round(dy)+7, 1, 1);
+  }
+  // umbrellas + towels on the far beach
+  for(const u of brellas){
+    const sx2 = u.x*0.45 - camX*0.45 + 200;
+    const wx = sx2 + camX*0.45;
+    if(sx2 > -12 && sx2 < W+8) drawUmbrella(sx2, 116 + Math.sin(wx*0.02)*5 + Math.sin(wx*0.007)*4 + 5, u.c);
+  }
+  // background palms
+  for(const p of palms){
+    const sx2 = p.x - camX*0.45;
+    if(sx2 > -30 && sx2 < W+10) drawPalm(sx2, 118 + Math.sin((p.x)*0.02)*4, p.s, true);
+  }
+  // track (per-column): lit crest, packed band, speckled sand
+  for(let sx2=0; sx2<W; sx2++){
+    const wx = Math.round(camX + sx2);
+    const gy = Math.round(groundAt(wx));
+    ctx.fillStyle = P.sandLite; ctx.fillRect(sx2, gy, 1, 1);
+    ctx.fillStyle = P.sandEdge; ctx.fillRect(sx2, gy+1, 1, 1);
+    ctx.fillStyle = P.sandWet;  ctx.fillRect(sx2, gy+2, 1, 2);
+    ctx.fillStyle = (Math.floor(wx/40)%2===0) ? P.sand : P.sandDark;
+    ctx.fillRect(sx2, gy+4, 1, H-gy-4);
+    // speckles
+    for(let k=0;k<3;k++){
+      if(h2(wx, k*17) < 0.22){
+        const sy = gy + 6 + h2(wx, k*31+5)*(H - gy - 7);
+        ctx.fillStyle = P.sandSpeck; ctx.fillRect(sx2, Math.round(sy), 1, 1);
+      }
+    }
+    // slope shading: darker on downhills
+    const gr = gradAt(wx);
+    if(gr > 0.15){ ctx.fillStyle = 'rgba(120,85,35,0.18)'; ctx.fillRect(sx2, gy, 1, 6); }
+    else if(gr < -0.15){ ctx.fillStyle = 'rgba(255,250,220,0.25)'; ctx.fillRect(sx2, gy, 1, 3); }
+  }
+  // start banner
+  const stX = 200 - camX;
+  if(stX > -40 && stX < W+10){
+    px(stX, groundAt(200)-34, 2, 34, P.ink); px(stX+36, groundAt(200)-34, 2, 34, P.ink);
+    px(stX, groundAt(200)-34, 38, 7, P.red);
+    text('GO', stX+13, groundAt(200)-33, 5, P.white);
+  }
+  // finish flag
+  const fx = FINISH_X - camX;
+  if(fx > -30 && fx < W+10){
+    const fgy = groundAt(FINISH_X);
+    px(fx, fgy-40, 2, 40, P.ink);
+    for(let i=0;i<4;i++) for(let j=0;j<3;j++)
+      px(fx+2 + i*5, fgy-40 + j*5, 5, 5, (i+j)%2 ? P.ink : P.white);
+  }
+  // foreground palms
+  for(const p of fgPalms){
+    const sx2 = p.x - camX;
+    if(sx2 > -40 && sx2 < W+20) drawPalm(sx2, Math.round(groundAt(p.x))+2, p.s, false);
+  }
+  // dust
+  for(const d of dust) px(d.x - camX, d.y, 2, 2, 'rgba(217,176,95,'+Math.min(1,d.t*3)+')');
+}
+
+function drawHUD(){
+  textShadow('SCORE ' + String(score).padStart(5,'0'), 6, 6, 6, P.white);
+  const tcol = timeLeft < 10 ? P.red : P.white;
+  textShadow('TIME ' + String(Math.ceil(timeLeft)).padStart(2,'0'), W-6, 6, 6, tcol, 'right');
+  // progress bar
+  px(W/2-31, 7, 62, 5, P.ink);
+  px(W/2-30, 8, 60, 3, '#3d566b');
+  px(W/2-30, 8, Math.round(60*Math.min(1, rider.x/FINISH_X)), 3, P.gold);
+  // pending trick readout
+  if(!rider.grounded && rider.pending.length){
+    const last = rider.pending[rider.pending.length-1];
+    textShadow(last.n, W/2, 22, 6, P.gold, 'center');
+  }
+  if(goTimer > 0 && Math.floor(goTimer*6)%2===0)
+    textShadow('PEDAL! \u2192', W/2, 50, 8, P.white, 'center');
+  for(const p of popups){
+    const a = Math.min(1, p.t*2);
+    ctx.globalAlpha = a;
+    textShadow(p.text, p.x - camX, p.y, 6, p.color, 'center');
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawMenu(){
+  camX = 40 + Math.sin(tGlobal*0.15)*30;
+  drawScene();
+  // title card
+  px(24, 26, W-48, 74, 'rgba(10,26,40,0.72)');
+  px(24, 26, W-48, 2, P.gold); px(24, 98, W-48, 2, P.gold);
+  textShadow('BMX', W/2, 36, 16, P.gold, 'center');
+  textShadow('BEACH JAM', W/2, 56, 12, P.white, 'center');
+  text('\u2192 PEDAL   SPACE JUMP', W/2, 76, 5, '#9fd8f0', 'center');
+  text('AIR: \u2190\u2192 FLIP  \u2191 SPIN  \u2193 TABLETOP', W/2, 86, 5, '#9fd8f0', 'center');
+  if(Math.floor(tGlobal*2)%2===0)
+    textShadow('PRESS SPACE TO RIDE', W/2, 112, 6, P.white, 'center');
+  if(best > 0) textShadow('BEST ' + String(best).padStart(5,'0'), W/2, 128, 6, P.gold, 'center');
+  // demo rider parked
+  const demo = {x: camX+90, y: groundAt(camX+90), angle:0, pedal:tGlobal*2, wheel:0, pose:'ride', spin:false, spinT:0};
+  drawRider(demo);
+  text('A RADICAL 8-BIT TRIBUTE', W/2, H-12, 4, '#6b8aa0', 'center');
+}
+
+function drawOver(){
+  drawScene();
+  drawRider(rider);
+  px(30, 34, W-60, 96, 'rgba(10,26,40,0.78)');
+  px(30, 34, W-60, 2, P.gold); px(30, 128, W-60, 2, P.gold);
+  const title = overReason === 'finish' ? 'COURSE CLEAR!' : "TIME'S UP!";
+  textShadow(title, W/2, 44, 9, overReason==='finish' ? P.gold : P.red, 'center');
+  textShadow('SCORE ' + String(score).padStart(5,'0'), W/2, 66, 8, P.white, 'center');
+  const newBest = score >= best && score > 0;
+  if(newBest && Math.floor(tGlobal*3)%2===0)
+    textShadow('NEW BEST!', W/2, 84, 6, P.gold, 'center');
+  else
+    textShadow('BEST ' + String(best).padStart(5,'0'), W/2, 84, 6, '#9fd8f0', 'center');
+  if(Math.floor(tGlobal*2)%2===0)
+    textShadow('SPACE TO RIDE AGAIN', W/2, 108, 6, P.white, 'center');
+}
+
+// ---------- main loop ----------
+let last = performance.now();
+function frame(now){
+  let dt = Math.min(0.033, (now - last)/1000);
+  last = now;
+  update(dt);
+  for(const k in pressed) pressed[k] = false;
+
+  ctx.clearRect(0,0,W,H);
+  if(mode === 'menu') drawMenu();
+  else if(mode === 'over') drawOver();
+  else {
+    drawScene();
+    drawRider(rider);
+    drawHUD();
+  }
+  requestAnimationFrame(frame);
+}
+resetRider();
+if(document.fonts && document.fonts.load){
+  Promise.all([
+    document.fonts.load('8px "Press Start 2P"'),
+    document.fonts.load('16px "Press Start 2P"')
+  ]).catch(()=>{}).finally(()=> requestAnimationFrame(frame));
+} else requestAnimationFrame(frame);
+</script>
+<!-- game-nav -->
+<nav id="game-nav" aria-label="Game navigation" style="position:fixed;right:10px;bottom:8px;z-index:2147483647;display:flex;gap:12px;align-items:center;font:600 13px/1.4 system-ui,-apple-system,sans-serif;padding:6px 11px;border-radius:8px;background:rgba(15,17,26,.55);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);opacity:.55;transition:opacity .2s" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.55">
+  <a href="https://github.freaxnx01.ch/games/" style="color:#8fd8e8;text-decoration:none">More Games…</a>
+  <span style="color:#5a6072" aria-hidden="true">·</span>
+  <a href="https://github.com/freaxnx01/game-bmx-beach-jam" target="_blank" rel="noopener" style="color:#8fd8e8;text-decoration:none">Source</a>
+</nav>
+</body>
+</html>
